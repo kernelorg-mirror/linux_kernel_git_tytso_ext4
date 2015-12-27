@@ -1,0 +1,56 @@
+#!/bin/bash -vx
+#
+# Sample shell script which demonstrates how to use ext4-crypto-cp
+# program.
+#
+# This shows the example of copying an top-level encrypted directory
+# whose filename is not encryped (because it is located in an
+# unencrypted directory); copying an encrypted regular file in an
+# encrypted directory to an encrypted directory; and creating a copy
+# of an encrypted directory with an encrypted filename.
+#
+# To do a recursive copy, one must first copy all of the encrypted
+# directories before populating them, since we can only create empty
+# encrypted directories.
+
+umount /vdc
+dmesg -n 7
+mke2fs -Fq -t ext4 -O encrypt /dev/vdc
+debugfs -w -R "ssv encrypt_pw_salt deadbeef-dead-beef-1234-5678deadbeef" /dev/vdc
+mount -t ext4 /dev/vdc /vdc
+mkdir /vdc/a
+echo foobar | e4crypt add_key /vdc/a
+cat << EOF > /vdc/a/test_file
+Lorem ipsum dolor sit amet, consectetur adipiscing elit. In accumsan
+mi ac magna vestibulum commodo. Cras facilisis posuere tellus in
+efficitur. Sed mollis mi eget elit vulputate pellentesque. Ut vitae
+laoreet diam. Aliquam sem leo, luctus eget leo eu, hendrerit egestas
+risus. Nulla non nisi ut nisl suscipit dictum. Donec eleifend dapibus
+mi eu porttitor. Nulla lacinia tellus nec porttitor tincidunt. Nam
+lectus nibh, fringilla sit amet enim id, consequat tincidunt
+mauris. Ut blandit orci vitae elit suscipit varius. Donec vel sem
+tristique, efficitur felis sit amet, sagittis metus. In laoreet
+ultricies interdum. Aliquam felis est, pharetra eget nisl vel,
+fringilla aliquet velit. Etiam ut augue ut ante fringilla gravida quis
+a arcu.
+EOF
+file_inum=$(stat --format=%i /vdc/a/test_file)
+mkdir /vdc/a/test_dir
+dir_inum=$(stat --format=%i /vdc/a/test_dir)
+umount /vdc
+keyctl purge logon
+mount -t ext4 -o ciphertext_access /dev/vdc /vdc
+F=$(find /vdc/a -inum $file_inum -print)
+D=$(find /vdc/a -inum $dir_inum -print)
+mkdir /vdc/b
+/vdb/ext4-crypto-cp /vdc/a /vdc/b
+/vdb/ext4-crypto-cp $F /vdc/b
+/vdb/ext4-crypto-cp $D /vdc/b
+
+echo foobar | e4crypt add_key
+md5sum /vdc/b/test_file /vdc/a/test_file
+umount /vdc
+e2fsck -fn /dev/vdc
+keyctl purge logon
+
+exit 0
