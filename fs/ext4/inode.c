@@ -5406,6 +5406,12 @@ int ext4_setattr(struct dentry *dentry, struct iattr *attr)
 	if (error)
 		return error;
 
+	if (ext4_verity_inode(inode)) {
+		error = fsverity_prepare_setattr(dentry, attr);
+		if (error)
+			return error;
+	}
+
 	if (is_quota_modification(inode, attr)) {
 		error = dquot_initialize(inode);
 		if (error)
@@ -5565,6 +5571,22 @@ int ext4_getattr(const struct path *path, struct kstat *stat,
 	struct ext4_inode *raw_inode;
 	struct ext4_inode_info *ei = EXT4_I(inode);
 	unsigned int flags;
+
+	if (ext4_verity_inode(inode)) {
+		/*
+		 * For fs-verity we need to override i_size with the original
+		 * data i_size.  This requires I/O to the file which with
+		 * fscrypt requires that the key be set up.  But, if the key is
+		 * unavailable just continue on without the i_size override.
+		 */
+		int err = fscrypt_require_key(inode);
+
+		if (err != -ENOKEY) {
+			err = fsverity_prepare_getattr(inode);
+			if (err)
+				return err;
+		}
+	}
 
 	if (EXT4_FITS_IN_INODE(raw_inode, ei, i_crtime)) {
 		stat->result_mask |= STATX_BTIME;

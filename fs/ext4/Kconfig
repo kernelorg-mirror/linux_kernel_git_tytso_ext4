@@ -111,6 +111,16 @@ config EXT4_FS_ENCRYPTION
 	default y
 	depends on EXT4_ENCRYPTION
 
+config EXT4_FS_VERITY
+	bool "Ext4 Verity"
+	depends on EXT4_FS
+	select FS_VERITY
+	help
+	  Enable file-based authentication of ext4 files.  This
+	  efficiently validates the randomly-accessed content of files
+	  using an authenticated dictionary structure hidden at the
+	  end of immutable files.
+
 config EXT4_DEBUG
 	bool "EXT4 debugging support"
 	depends on EXT4_FS

@@ -983,6 +983,14 @@ resizefs_out:
 	case EXT4_IOC_GET_ENCRYPTION_POLICY:
 		return fscrypt_ioctl_get_policy(filp, (void __user *)arg);
 
+	case FS_IOC_ENABLE_VERITY:
+		/* XXX add check for fsverity feature */
+		return fsverity_ioctl_enable(filp, (const void __user *)arg);
+
+	case FS_IOC_SET_VERITY_MEASUREMENT:
+		return fsverity_ioctl_set_measurement(filp,
+						      (const void __user *)arg);
+
 	case EXT4_IOC_FSGETXATTR:
 	{
 		struct fsxattr fa;

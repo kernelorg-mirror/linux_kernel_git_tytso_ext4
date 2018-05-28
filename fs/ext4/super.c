@@ -1076,6 +1076,7 @@ void ext4_clear_inode(struct inode *inode)
 		EXT4_I(inode)->jinode = NULL;
 	}
 	fscrypt_put_encryption_info(inode);
+	fsverity_cleanup_inode(inode);
 }
 
 static struct inode *ext4_nfs_get_inode(struct super_block *sb,
@@ -1252,6 +1253,46 @@ static const struct fscrypt_operations ext4_cryptops = {
 	.max_namelen		= ext4_max_namelen,
 };
 #endif
+
+#ifdef CONFIG_EXT4_FS_VERITY
+static bool is_verity(struct inode *inode)
+{
+	return ext4_verity_inode(inode);
+}
+
+static int set_verity(struct inode *inode)
+{
+	handle_t *handle;
+	struct ext4_iloc iloc;
+	int err;
+
+	handle = ext4_journal_start(inode, EXT4_HT_INODE, 1);
+	if (IS_ERR(handle))
+		return PTR_ERR(handle);
+	err = ext4_reserve_inode_write(handle, inode, &iloc);
+	if (err == 0) {
+		ext4_set_inode_flag(inode, EXT4_INODE_VERITY);
+		err = ext4_mark_iloc_dirty(handle, inode, &iloc);
+	}
+	ext4_journal_stop(handle);
+
+	return err;
+}
+
+static struct page *read_metadata_page(struct inode *inode, pgoff_t index)
+{
+	if (WARN_ON(ext4_has_inline_data(inode)))
+		return ERR_PTR(-EINVAL);
+
+	return read_mapping_page(inode->i_mapping, index, NULL);
+}
+
+static const struct fsverity_operations ext4_verityops = {
+	.is_verity		= is_verity,
+	.set_verity		= set_verity,
+	.read_metadata_page	= read_metadata_page,
+};
+#endif /* CONFIG_EXT4_FS_VERITY */
 
 #ifdef CONFIG_QUOTA
 static const char * const quotatypes[] = INITQFNAMES;
@@ -4022,6 +4063,9 @@ static int ext4_fill_super(struct super_block *sb, void *data, int silent)
 	sb->s_xattr = ext4_xattr_handlers;
 #ifdef CONFIG_EXT4_FS_ENCRYPTION
 	sb->s_cop = &ext4_cryptops;
+#endif
+#ifdef CONFIG_EXT4_FS_VERITY
+	sb->s_vop = &ext4_verityops;
 #endif
 #ifdef CONFIG_QUOTA
 	sb->dq_op = &ext4_quota_operations;
