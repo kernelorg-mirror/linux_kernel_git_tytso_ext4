@@ -301,6 +301,20 @@ struct fscrypt_key {
 	__u32 size;
 };
 
+/* file-based verity support */
+
+#define FS_VERITY_ALG_SHA256	1
+
+struct fsverity_measurement {
+	__u16 digest_algorithm;
+	__u16 digest_size;
+	__u32 reserved1;
+	__u64 reserved2[3];
+	__u8 digest[];
+};
+
+#define FS_IOC_ENABLE_VERITY		_IO('f', 133)
+
 /*
  * Inode flags (FS_IOC_GETFLAGS / FS_IOC_SETFLAGS)
  *
