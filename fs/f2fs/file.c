@@ -2873,6 +2873,11 @@ static int f2fs_ioc_enable_verity(struct file *filp, unsigned long arg)
 	return fsverity_ioctl_enable(filp, (const void __user *)arg);
 }
 
+static int f2fs_ioc_set_verity_measurement(struct file *filp, unsigned long arg)
+{
+	return fsverity_ioctl_set_measurement(filp, (const void __user *)arg);
+}
+
 long f2fs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 {
 	if (unlikely(f2fs_cp_error(F2FS_I_SB(file_inode(filp)))))
@@ -2931,6 +2936,8 @@ long f2fs_ioctl(struct file *filp, unsigned int cmd, unsigned long arg)
 		return f2fs_ioc_precache_extents(filp, arg);
 	case FS_IOC_ENABLE_VERITY:
 		return f2fs_ioc_enable_verity(filp, arg);
+	case FS_IOC_SET_VERITY_MEASUREMENT:
+		return f2fs_ioc_set_verity_measurement(filp, arg);
 	default:
 		return -ENOTTY;
 	}
@@ -3039,6 +3046,7 @@ long f2fs_compat_ioctl(struct file *file, unsigned int cmd, unsigned long arg)
 	case F2FS_IOC_SET_PIN_FILE:
 	case F2FS_IOC_PRECACHE_EXTENTS:
 	case FS_IOC_ENABLE_VERITY:
+	case FS_IOC_SET_VERITY_MEASUREMENT:
 		break;
 	default:
 		return -ENOIOCTLCMD;

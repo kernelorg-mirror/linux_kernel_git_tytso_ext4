@@ -29,3 +29,22 @@ config FS_VERITY_INTEGRITY_ONLY
 	  Enable experimental integrity-only mode for fs-verity.
 
 	  Say N unless you are an fs-verity developer.
+
+config FS_VERITY_USERSPACE_SIG_VERIFY
+	bool "Allow userspace authentication of fs-verity files (EXPERIMENTAL)"
+	depends on FS_VERITY
+	help
+	  Allow privileged processes to authenticate fs-verity files by
+	  opening them and executing an ioctl, providing the expected
+	  measurement.  This is only useful if userspace is doing the
+	  signature verification rather than the kernel; this is not
+	  recommended.
+
+	  This also implies that the contents of fs-verity files will be
+	  readable prior to the authentication / signature verification.
+
+	  This also enables support for the elide and patch extensions,
+	  which allow users to specify regions of files that are not
+	  authenticated, e.g. because they contain the signature.
+
+	  Say N.

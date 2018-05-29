@@ -674,6 +674,9 @@ struct inode {
 #if IS_ENABLED(CONFIG_FS_VERITY)
 	struct fsverity_info	*i_verity_info;
 #endif
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+	struct list_head	i_fsverity_list;
+#endif
 
 	void			*i_private; /* fs or device private pointer */
 } __randomize_layout;
@@ -1457,6 +1460,11 @@ struct super_block {
 
 	spinlock_t		s_inode_wblist_lock;
 	struct list_head	s_inodes_wb;	/* writeback inodes */
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+	/* fs-verity inodes being pinned in memory */
+	spinlock_t		s_inode_fsveritylist_lock;
+	struct list_head	s_inodes_fsverity;
+#endif
 } __randomize_layout;
 
 /* Helper functions so that in most cases filesystems will

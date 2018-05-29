@@ -41,6 +41,169 @@ static void dump_fsverity_footer(const struct fsverity_footer *ftr)
 	pr_debug("salt = %*phN\n", (int)sizeof(ftr->salt), ftr->salt);
 }
 
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+static int parse_elide_extension(struct fsverity_info *vi,
+				 const void *_ext, size_t extra_len)
+{
+	const struct fsverity_extension_elide *ext = _ext;
+	u64 offset = le64_to_cpu(ext->offset);
+	u64 length = le64_to_cpu(ext->length);
+	struct fsverity_elision *elision;
+
+	pr_debug("Found elide extension: offset=%llu, length=%llu\n",
+		 offset, length);
+
+	if ((offset | length) & ~PAGE_MASK) {
+		pr_warn("Misaligned elision (offset=%llu, length=%llu)\n",
+			offset, length);
+		return -EINVAL;
+	}
+
+	if (length < 1) {
+		pr_warn("Empty elision\n");
+		return -EINVAL;
+	}
+
+	if (offset >= vi->data_i_size || length > vi->data_i_size - offset) {
+		pr_warn("Elision offset and/or length too large (offset=%llu, length=%llu)\n",
+			offset, length);
+		return -EINVAL;
+	}
+
+	if (length >= vi->elided_i_size) {
+		pr_warn("Entire file is elided!\n");
+		return -EINVAL;
+	}
+
+	elision = kmalloc(sizeof(*elision), GFP_NOFS);
+	if (!elision)
+		return -ENOMEM;
+
+	elision->index = offset >> PAGE_SHIFT;
+	elision->nr_pages = length >> PAGE_SHIFT;
+	list_add_tail(&elision->link, &vi->elisions);
+	vi->elided_i_size -= length;
+	return 0;
+}
+
+static int cmp_elisions(void *priv, struct list_head *_a, struct list_head *_b)
+{
+	const struct fsverity_elision *a, *b;
+
+	a = list_entry(_a, struct fsverity_elision, link);
+	b = list_entry(_b, struct fsverity_elision, link);
+	if (a->index > b->index)
+		return 1;
+	if (a->index < b->index)
+		return -1;
+	return 0;
+}
+
+/*
+ * Sort the elisions (if any) in order of increasing offset, then verify they
+ * don't overlap.
+ */
+static int sort_and_check_elisions(struct fsverity_info *vi)
+{
+	const struct fsverity_elision *elision;
+	pgoff_t next_unelided_index = 0;
+
+	list_sort(NULL, &vi->elisions, cmp_elisions);
+
+	list_for_each_entry(elision, &vi->elisions, link) {
+		if (elision->index < next_unelided_index) {
+			pr_warn("Elisions overlap\n");
+			return -EINVAL;
+		}
+		next_unelided_index = elision->index + elision->nr_pages;
+	}
+	return 0;
+}
+
+static int parse_patch_extension(struct fsverity_info *vi,
+				 const void *_ext, size_t extra_len)
+{
+	const struct fsverity_extension_patch *ext = _ext;
+	u64 offset = le64_to_cpu(ext->offset);
+	struct fsverity_patch *patch;
+
+	pr_debug("Found patch extension: offset=%llu, length=%zu\n",
+		 offset, extra_len);
+
+	if (extra_len < 1) {
+		pr_warn("Patch is empty\n");
+		return -EINVAL;
+	}
+
+	if (extra_len > FS_VERITY_MAX_PATCH_SIZE) {
+		pr_warn("Patch is too long (got %zu, limit is %d)\n",
+			extra_len, FS_VERITY_MAX_PATCH_SIZE);
+		return -EINVAL;
+	}
+
+	if (offset >= vi->data_i_size || extra_len > vi->data_i_size - offset) {
+		pr_warn("Patch offset is too large (%llu)\n", offset);
+		return -EINVAL;
+	}
+
+	pr_debug("databytes=%*phN\n", (int)extra_len, ext->databytes);
+
+	patch = kmalloc(sizeof(*patch) + extra_len, GFP_NOFS);
+	if (!patch)
+		return -ENOMEM;
+	patch->index = offset >> PAGE_SHIFT;
+	patch->offset = offset & ~PAGE_MASK;
+	patch->length = extra_len;
+	memcpy(patch->patch, ext->databytes, extra_len);
+	list_add_tail(&patch->link, &vi->patches);
+	return 0;
+}
+
+static int cmp_patches(void *priv, struct list_head *_a, struct list_head *_b)
+{
+	const struct fsverity_patch *a, *b;
+
+	a = list_entry(_a, struct fsverity_patch, link);
+	b = list_entry(_b, struct fsverity_patch, link);
+	if (a->index > b->index)
+		return 1;
+	if (a->index < b->index)
+		return -1;
+	return 0;
+}
+
+/*
+ * Sort the patches (if any) in order of increasing offset, then verify they
+ * don't overlap and that no page has multiple patches.
+ */
+static int sort_and_check_patches(struct fsverity_info *vi)
+{
+	const struct fsverity_patch *patch;
+	u64 next_unpatched_byte = 0;
+	pgoff_t prev_patched_index = 0;
+
+	list_sort(NULL, &vi->patches, cmp_patches);
+
+	list_for_each_entry(patch, &vi->patches, link) {
+		u64 begin = patch_begin_byte(patch);
+		u64 end = patch_end_byte(patch);
+
+		if (begin < next_unpatched_byte) {
+			pr_warn("Patches overlap\n");
+			return -EINVAL;
+		}
+		if (next_unpatched_byte != 0 &&
+		    patch->index <= prev_patched_index) {
+			pr_warn("Multiple patches per page\n");
+			return -EINVAL;
+		}
+		next_unpatched_byte = end;
+		prev_patched_index = (end - 1) >> PAGE_SHIFT;
+	}
+	return 0;
+}
+#endif /* CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY */
+
 const struct fsverity_hash_alg *
 fsverity_check_measurement_struct(const struct fsverity_measurement *m)
 {
@@ -150,6 +313,16 @@ static const struct extension_type {
 	size_t base_len;
 	bool unauthenticated;
 } extension_types[] = {
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+	[FS_VERITY_EXT_ELIDE] = {
+		.parse = parse_elide_extension,
+		.base_len = sizeof(struct fsverity_extension_elide),
+	},
+	[FS_VERITY_EXT_PATCH] = {
+		.parse = parse_patch_extension,
+		.base_len = sizeof(struct fsverity_extension_patch),
+	},
+#endif
 	[FS_VERITY_EXT_PKCS7_SIGNATURE] = {
 		.parse = parse_pkcs7_signature_extension,
 		.base_len = 0,
@@ -225,6 +398,16 @@ static int parse_extensions(struct fsverity_info *vi,
 		if (!unauthenticated)
 			auth_end = ext_hdr;
 	}
+
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+	err = sort_and_check_elisions(vi);
+	if (err)
+		return err;
+
+	err = sort_and_check_patches(vi);
+	if (err)
+		return err;
+#endif
 
 	return auth_end - (const void *)ftr;
 }
@@ -311,6 +494,7 @@ static int parse_footer(struct fsverity_info *vi,
 			vi->data_i_size);
 		return -EINVAL;
 	}
+	vi->elided_i_size = vi->data_i_size;
 
 	/* salt */
 	memcpy(vi->salt, ftr->salt, FS_VERITY_SALT_SIZE);
@@ -329,9 +513,10 @@ static int parse_footer(struct fsverity_info *vi,
 static int compute_tree_depth_and_offsets(struct fsverity_info *vi)
 {
 	unsigned int hashes_per_block = 1 << vi->log_arity;
-	u64 blocks = (vi->data_i_size + (1 << vi->block_bits) - 1) >>
+	u64 blocks = (vi->elided_i_size + (1 << vi->block_bits) - 1) >>
 			vi->block_bits;
-	u64 offset = blocks;
+	u64 offset = (vi->data_i_size + (1 << vi->block_bits) - 1) >>
+			vi->block_bits;
 	int depth = 0;
 	int i;
 
@@ -358,6 +543,21 @@ static int compute_tree_depth_and_offsets(struct fsverity_info *vi)
 	return 0;
 }
 
+static pgoff_t first_unelided_page(struct fsverity_info *vi)
+{
+	pgoff_t index = 0;
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+	const struct fsverity_elision *elision;
+
+	list_for_each_entry(elision, &vi->elisions, link) {
+		if (index != elision->index)
+			break;
+		index += elision->nr_pages;
+	}
+#endif
+	return index;
+}
+
 /*
  * Compute the hash of the root of the Merkle tree (or of the lone data block
  * for files <= blocksize in length) and store it in vi->root_hash.
@@ -375,7 +575,7 @@ static int compute_root_hash(struct inode *inode, struct fsverity_info *vi)
 	if (vi->depth)
 		root_idx = vi->hash_lvl_region_idx[vi->depth - 1];
 	else
-		root_idx = 0;
+		root_idx = first_unelided_page(vi);
 
 	root_page = inode->i_sb->s_vop->read_metadata_page(inode, root_idx);
 	if (IS_ERR(root_page)) {
@@ -471,16 +671,35 @@ static int verify_file_measurement(struct fsverity_info *vi,
 		return err;
 
 	if (!vi->have_trusted_measurement) {
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+		/*
+		 * Allow proceeding with no signature if userspace signature
+		 * verification is enabled.  Userspace must instead call
+		 * FS_IOC_SET_VERITY_MEASUREMENT to provide the trusted
+		 * measurement.
+		 */
+		vi->mode = FS_VERITY_MODE_NEED_AUTHENTICATION;
+		memcpy(vi->measurement, measurement, vi->hash_alg->digest_size);
+		pr_debug("Computed measurement: %s %*phN (used ftr_auth_len %d)\n",
+			 vi->hash_alg->friendly_name,
+			 vi->hash_alg->digest_size, measurement,
+			 ftr_auth_len);
+		return 0;
+#else
 		pr_warn("No signature found, measurement is %s %*phN\n",
 			vi->hash_alg->friendly_name,
 			vi->hash_alg->digest_size, measurement);
 		return -EBADMSG;
+#endif
 	}
 
 	if (!memcmp(measurement, vi->measurement, vi->hash_alg->digest_size)) {
 		pr_debug("Verified measurement: %s %*phN (used ftr_auth_len %d)\n",
 			 vi->hash_alg->friendly_name,
 			 vi->hash_alg->digest_size, measurement, ftr_auth_len);
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+		vi->mode = FS_VERITY_MODE_AUTHENTICATED;
+#endif
 		return 0;
 	}
 
@@ -500,6 +719,10 @@ static struct fsverity_info *alloc_fsverity_info(void)
 	vi = kmem_cache_zalloc(fsverity_info_cachep, GFP_NOFS);
 	if (!vi)
 		return NULL;
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+	INIT_LIST_HEAD(&vi->elisions);
+	INIT_LIST_HEAD(&vi->patches);
+#endif
 	return vi;
 }
 

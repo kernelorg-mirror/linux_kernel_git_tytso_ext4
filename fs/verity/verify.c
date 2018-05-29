@@ -71,7 +71,8 @@ static void extract_hash(struct page *hpage, unsigned int hoffset,
 	kunmap_atomic(virt);
 }
 
-static int hash_page(struct fsverity_info *vi, struct page *page, u8 *out)
+static int hash_page(struct fsverity_info *vi, struct page *page,
+		     const struct fsverity_patch *patch, u8 *out)
 {
 	SHASH_DESC_ON_STACK(desc, vi->hash_alg->tfm);
 	void *virt;
@@ -89,12 +90,85 @@ static int hash_page(struct fsverity_info *vi, struct page *page, u8 *out)
 		return err;
 
 	virt = kmap_atomic(page);
-	err = crypto_shash_update(desc, virt, PAGE_SIZE);
+	if (patch) {
+		unsigned int patch_offset = patch->offset;
+		unsigned int patch_length = patch->length;
+		unsigned int patch_skip = 0;
+
+		if (patch->index != page->index) {
+			/* Patch started on a prior page */
+			BUG_ON(patch->index > page->index);
+			patch_skip = (PAGE_SIZE - patch_offset) +
+				     ((page->index - patch->index - 1) <<
+				      PAGE_SHIFT);
+			patch_offset = 0;
+			patch_length -= patch_skip;
+		}
+		patch_length = min_t(unsigned int, patch_length,
+				     PAGE_SIZE - patch_offset);
+
+		err = crypto_shash_update(desc, virt, patch_offset);
+		if (!err)
+			err = crypto_shash_update(desc,
+						  patch->patch + patch_skip,
+						  patch_length);
+		if (!err)
+			err = crypto_shash_update(desc,
+				virt + patch_offset + patch_length,
+				PAGE_SIZE - patch_offset - patch_length);
+	} else {
+		/* Normal case: no patch, just hash the page */
+		err = crypto_shash_update(desc, virt, PAGE_SIZE);
+	}
 	kunmap_atomic(virt);
 	if (err)
 		return err;
 
 	return fsverity_finalize_hash(vi, desc, out);
+}
+
+/*
+ * Find the patch, if any, that needs to be applied to the page at the specified
+ * index when verifying.
+ */
+static const struct fsverity_patch *find_patch(struct fsverity_info *vi,
+					       pgoff_t index)
+{
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+	const struct fsverity_patch *patch;
+
+	list_for_each_entry(patch, &vi->patches, link) {
+		if (index < patch->index)
+			break; /* list is sorted, so can stop here */
+		if (index <= (patch_end_byte(patch) - 1) >> PAGE_SHIFT)
+			return patch;
+	}
+#endif
+	return NULL;
+}
+
+/*
+ * Determine whether the given page index is elided (bypasses verification).  If
+ * so, return true.  Else, return false and adjust the page index to account for
+ * any previous elisions.
+ */
+static bool page_elided(struct fsverity_info *vi, pgoff_t *index_p)
+{
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+	const struct fsverity_elision *elision;
+	pgoff_t orig_idx = *index_p;
+	pgoff_t elided_idx = *index_p;
+
+	list_for_each_entry(elision, &vi->elisions, link) {
+		if (orig_idx < elision->index)
+			break; /* list is sorted, so can stop here */
+		if (orig_idx < elision->index + elision->nr_pages)
+			return true;
+		elided_idx -= elision->nr_pages;
+	}
+	*index_p = elided_idx;
+#endif
+	return false;
 }
 
 static inline int compare_hashes(const u8 *want_hash, const u8 *real_hash,
@@ -130,6 +204,7 @@ bool fsverity_verify_page(struct page *data_page)
 	u8 real_hash[FS_VERITY_MAX_DIGEST_SIZE];
 	struct page *hpages[FS_VERITY_MAX_LEVELS];
 	unsigned int hoffsets[FS_VERITY_MAX_LEVELS];
+	const struct fsverity_patch *patch;
 	int err;
 
 	/*
@@ -143,6 +218,34 @@ bool fsverity_verify_page(struct page *data_page)
 	if (WARN_ON_ONCE(!PageLocked(data_page)))
 		return false;
 
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+	/*
+	 * Reads are forbidden if the measurement being enforced doesn't match
+	 * the expected one.  Otherwise reads are allowed, but we warn if they
+	 * are unauthenticated, i.e. if FS_IOC_SET_VERITY_MEASUREMENT hasn't
+	 * been called yet.  (Some users need to use unauthenticated reads to
+	 * find a signature stored in the file.  Allowing these doesn't actually
+	 * decrease security, since an attacker could just replace the file with
+	 * a non-verity one anyway.)
+	 */
+	switch (vi->mode) {
+	case FS_VERITY_MODE_NEED_AUTHENTICATION:
+		pr_warn_ratelimited("Unauthenticated read; ino=%lu, index=%lu\n",
+				    inode->i_ino, index);
+		break;
+	case FS_VERITY_MODE_AUTHENTICATION_FAILED:
+		pr_warn("Root authentication failed, failing read; inode=%lu, index=%lu\n",
+			inode->i_ino, index);
+		return false;
+	case FS_VERITY_MODE_AUTHENTICATED:
+	case FS_VERITY_MODE_INTEGRITY_ONLY:
+		break;
+	default:
+		WARN_ON_ONCE(1);
+		return false;
+	}
+#endif /* CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY */
+
 	/*
 	 * Since ->i_size is overridden with ->data_i_size, and fs-verity avoids
 	 * recursing into itself when reading hash pages, we shouldn't normally
@@ -155,6 +258,19 @@ bool fsverity_verify_page(struct page *data_page)
 		pr_debug("Page %lu is in metadata region\n", index);
 		return true;
 	}
+
+	patch = find_patch(vi, index);
+	if (patch)
+		pr_debug("Selected patch: index=%lu, offset=%u, length=%u for page index %lu\n",
+			 patch->index, patch->offset, patch->length, index);
+
+	if (page_elided(vi, &index)) {
+		pr_debug("Page %lu is elided, not verifying!\n", index);
+		return true;
+	}
+	if (index != data_page->index)
+		pr_debug_ratelimited("Adjusted index because of elisions: %lu => %lu\n",
+				     data_page->index, index);
 
 	pr_debug_ratelimited("Verifying data page %lu...\n", index);
 
@@ -207,7 +323,7 @@ bool fsverity_verify_page(struct page *data_page)
 		struct page *hpage = hpages[level - 1];
 		unsigned int hoffset = hoffsets[level - 1];
 
-		err = hash_page(vi, hpage, real_hash);
+		err = hash_page(vi, hpage, NULL, real_hash);
 		if (err)
 			goto out;
 		err = compare_hashes(want_hash, real_hash,
@@ -227,7 +343,7 @@ bool fsverity_verify_page(struct page *data_page)
 	}
 
 	/* Finally, verify the data page */
-	err = hash_page(vi, data_page, real_hash);
+	err = hash_page(vi, data_page, patch, real_hash);
 	if (err)
 		goto out;
 	err = compare_hashes(want_hash, real_hash, vi->hash_alg->digest_size,

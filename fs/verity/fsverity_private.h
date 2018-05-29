@@ -61,6 +61,46 @@ struct fsverity_extension {
 	__le16 reserved;	/* Reserved, must be 0 */
 } __packed;
 
+/* On-disk format */
+struct fsverity_extension_elide {
+	__le64 offset;
+	__le64 length;
+} __packed;
+
+/* In-kernel struct */
+struct fsverity_elision {
+	struct list_head link;
+	pgoff_t index;
+	pgoff_t nr_pages;
+};
+
+/* On-disk format */
+struct fsverity_extension_patch {
+	__le64 offset;
+	u8 databytes[];
+} __packed;
+
+#define FS_VERITY_MAX_PATCH_SIZE 255
+
+/* In-kernel struct */
+struct fsverity_patch {
+	struct list_head link;
+	pgoff_t index;
+	unsigned int offset;
+	unsigned int length;
+	u8 patch[];
+};
+
+static inline u64 patch_begin_byte(const struct fsverity_patch *patch)
+{
+	return ((u64)patch->index << PAGE_SHIFT) + patch->offset;
+}
+
+static inline u64 patch_end_byte(const struct fsverity_patch *patch)
+{
+	return patch_begin_byte(patch) + patch->length;
+}
+
 /*
  * Up to 64 levels are theoretically possible with a very small block size, but
  * we'd like to limit stack usage, and in practice this is plenty.  E.g., with
@@ -76,6 +116,23 @@ struct fsverity_hash_alg {
 	const char *algname;
 	unsigned int digest_size;
 };
+
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+/* Mode of an fs-verity file */
+enum fsverity_mode {
+	/* Root of trust not provided yet, reads will succeed with warnings */
+	FS_VERITY_MODE_NEED_AUTHENTICATION,
+
+	/* File contents don't match root of trust, reads will fail */
+	FS_VERITY_MODE_AUTHENTICATION_FAILED,
+
+	/* File contents match root of trust, reads will succeed */
+	FS_VERITY_MODE_AUTHENTICATED,
+
+	/* Integrity-only mode with no root of trust, reads will succeed */
+	FS_VERITY_MODE_INTEGRITY_ONLY,
+};
+#endif
 
 /**
  * fsverity_info - cached fs-verity metadata for an inode
@@ -93,6 +150,7 @@ struct fsverity_info {
 	u8 depth;			/* depth of the Merkle tree */
 	u8 salt[FS_VERITY_SALT_SIZE];	/* used to salt the hashes */
 	u64 data_i_size;		/* original file size */
+	u64 elided_i_size;		/* original file size after elisions */
 	u64 full_i_size;		/* full file size including metadata */
 	u8 root_hash[FS_VERITY_MAX_DIGEST_SIZE];   /* Merkle tree root hash */
 	u8 measurement[FS_VERITY_MAX_DIGEST_SIZE]; /* file measurement */
@@ -101,6 +159,13 @@ struct fsverity_info {
 
 	/* Starting blocks for each tree level. 'depth-1' is the root level. */
 	u64 hash_lvl_region_idx[FS_VERITY_MAX_LEVELS];
+
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+	enum fsverity_mode mode;	/* current mode of the file */
+	/* Optional elide and patch extensions, sorted by increasing offset */
+	struct list_head elisions;
+	struct list_head patches;
+#endif
 };
 
 /* hash_algs.c */

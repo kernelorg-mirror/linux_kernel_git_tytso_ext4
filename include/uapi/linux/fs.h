@@ -315,6 +315,7 @@ struct fsverity_measurement {
 };
 
 #define FS_IOC_ENABLE_VERITY		_IO('f', 133)
+#define FS_IOC_SET_VERITY_MEASUREMENT	_IOW('f', 134, struct fsverity_measurement)
 
 /*
  * Inode flags (FS_IOC_GETFLAGS / FS_IOC_SETFLAGS)

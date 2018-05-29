@@ -23,6 +23,16 @@ struct fsverity_operations {
 
 /* ioctl.c */
 extern int fsverity_ioctl_enable(struct file *filp, const void __user *arg);
+#ifdef CONFIG_FS_VERITY_USERSPACE_SIG_VERIFY
+extern int fsverity_ioctl_set_measurement(struct file *filp,
+					  const void __user *arg);
+#else
+static inline int fsverity_ioctl_set_measurement(struct file *filp,
+						 const void __user *arg)
+{
+	return -EOPNOTSUPP;
+}
+#endif
 
 /* setup.c */
 extern int fsverity_file_open(struct inode *inode, struct file *filp);
@@ -42,6 +52,12 @@ extern void fsverity_enqueue_verify_work(struct work_struct *work);
 
 static inline int fsverity_ioctl_enable(struct file *filp,
 					const void __user *arg)
+{
+	return -EOPNOTSUPP;
+}
+
+static inline int fsverity_ioctl_set_measurement(struct file *filp,
+						 const void __user *arg)
 {
 	return -EOPNOTSUPP;
 }
