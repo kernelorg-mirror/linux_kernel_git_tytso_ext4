@@ -5870,6 +5870,10 @@ static int __init ext4_init_fs(void)
 	if (err)
 		return err;
 
+	err = ext4_init_post_read_processing();
+	if (err)
+		goto out6;
+
 	err = ext4_init_pageio();
 	if (err)
 		goto out5;
@@ -5909,6 +5913,8 @@ out4:
 	ext4_exit_pageio();
 out5:
 	ext4_exit_es();
+out6:
+	ext4_destroy_post_read_processing();
 
 	return err;
 }
