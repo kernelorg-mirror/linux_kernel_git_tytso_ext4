@@ -288,7 +288,7 @@ static int parse_footer(struct fsverity_info *vi,
 
 	/* flags */
 	vi->flags = le32_to_cpu(ftr->flags);
-	if (vi->flags) {
+	if (vi->flags & ~FS_VERITY_FLAG_INTEGRITY_ONLY) {
 		pr_warn("Unsupported flags (%#x)\n", vi->flags);
 		return -EINVAL;
 	}
@@ -394,7 +394,7 @@ static int compute_root_hash(struct inode *inode, struct fsverity_info *vi)
 		kunmap_atomic(root);
 	}
 	if (!err)
-		err = crypto_shash_final(desc, vi->root_hash);
+		err = fsverity_finalize_hash(vi, desc, vi->root_hash);
 
 	if (err)
 		pr_warn("Error computing Merkle tree root hash: %d\n", err);
@@ -434,7 +434,7 @@ static int compute_measurement(struct fsverity_info *vi,
 		err = crypto_shash_update(desc, vi->root_hash,
 					  vi->hash_alg->digest_size);
 	if (!err)
-		err = crypto_shash_final(desc, measurement);
+		err = fsverity_finalize_hash(vi, desc, measurement);
 
 	if (err)
 		pr_warn("Error computing fs-verity measurement: %d\n", err);
@@ -455,6 +455,16 @@ static int verify_file_measurement(struct fsverity_info *vi,
 {
 	u8 measurement[FS_VERITY_MAX_DIGEST_SIZE];
 	int err;
+
+	if (vi->flags & FS_VERITY_FLAG_INTEGRITY_ONLY) {
+#ifdef CONFIG_FS_VERITY_INTEGRITY_ONLY
+		pr_warn("Using experimental integrity-only mode!\n");
+		return 0;
+#else
+		pr_warn("Integrity-only mode not supported\n");
+		return -EBADMSG;
+#endif
+	}
 
 	err = compute_measurement(vi, ftr, ftr_auth_len, measurement);
 	if (err)

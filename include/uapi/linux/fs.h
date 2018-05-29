@@ -304,6 +304,7 @@ struct fscrypt_key {
 /* file-based verity support */
 
 #define FS_VERITY_ALG_SHA256	1
+#define FS_VERITY_ALG_CRC32	2
 
 struct fsverity_measurement {
 	__u16 digest_algorithm;

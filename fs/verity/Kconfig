@@ -2,6 +2,7 @@ config FS_VERITY
 	tristate "FS Verity (File-based authentication)"
 	depends on BLOCK
 	select CRYPTO
+	select CRYPTO_CRC32
 	select CRYPTO_SHA256
 	select CRYPTO_HASH
 	select SYSTEM_DATA_VERIFICATION
@@ -18,5 +19,13 @@ config FS_VERITY_DEBUG
 	depends on FS_VERITY
 	help
 	  Enable debugging messages related to fs-verity.
+
+	  Say N unless you are an fs-verity developer.
+
+config FS_VERITY_INTEGRITY_ONLY
+	bool "FS Verity integrity-only mode (EXPERIMENTAL)"
+	depends on FS_VERITY
+	help
+	  Enable experimental integrity-only mode for fs-verity.
 
 	  Say N unless you are an fs-verity developer.

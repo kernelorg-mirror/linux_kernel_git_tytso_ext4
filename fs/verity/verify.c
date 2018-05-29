@@ -94,7 +94,7 @@ static int hash_page(struct fsverity_info *vi, struct page *page, u8 *out)
 	if (err)
 		return err;
 
-	return crypto_shash_final(desc, out);
+	return fsverity_finalize_hash(vi, desc, out);
 }
 
 static inline int compare_hashes(const u8 *want_hash, const u8 *real_hash,

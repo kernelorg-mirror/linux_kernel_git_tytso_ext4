@@ -41,6 +41,8 @@ struct fsverity_footer {
 	/* This structure is 64 bytes long */
 } __packed;
 
+#define FS_VERITY_FLAG_INTEGRITY_ONLY	0x00000001
+
 /* extension types */
 #define FS_VERITY_EXT_ELIDE		1
 #define FS_VERITY_EXT_PATCH		2
@@ -103,6 +105,8 @@ struct fsverity_info {
 
 /* hash_algs.c */
 const struct fsverity_hash_alg *fsverity_get_hash_alg(unsigned int num);
+int fsverity_finalize_hash(struct fsverity_info *vi, struct shash_desc *desc,
+			   u8 *out);
 void __init fsverity_check_hash_algs(void);
 void __exit fsverity_exit_hash_algs(void);
 
