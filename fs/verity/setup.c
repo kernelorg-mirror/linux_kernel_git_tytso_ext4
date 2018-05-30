@@ -20,6 +20,7 @@
 #include <linux/module.h>
 #include <linux/ratelimit.h>
 #include <linux/verification.h>
+#include <linux/vmalloc.h>
 
 static struct kmem_cache *fsverity_info_cachep;
 
