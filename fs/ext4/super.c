@@ -1591,6 +1591,7 @@ enum {
 	Opt_max_dir_size_kb, Opt_nojournal_checksum, Opt_nombcache,
 	Opt_no_prefetch_block_bitmaps, Opt_mb_optimize_scan,
 	Opt_errors, Opt_data, Opt_data_err, Opt_jqfmt, Opt_dax_type,
+	Opt_new_write,
 #ifdef CONFIG_EXT4_DEBUG
 	Opt_fc_debug_max_replay, Opt_fc_debug_force
 #endif
@@ -1731,6 +1732,7 @@ static const struct fs_parameter_spec ext4_param_specs[] = {
 						Opt_removed),
 	fsparam_flag	("no_prefetch_block_bitmaps",
 						Opt_no_prefetch_block_bitmaps),
+	fsparam_flag	("new_write",		Opt_new_write),
 	fsparam_s32	("mb_optimize_scan",	Opt_mb_optimize_scan),
 	fsparam_string	("check",		Opt_removed),	/* mount option from ext2/3 */
 	fsparam_flag	("nocheck",		Opt_removed),	/* mount option from ext2/3 */
@@ -1830,6 +1832,7 @@ static const struct mount_opts {
 	{Opt_fc_debug_force, EXT4_MOUNT2_JOURNAL_FAST_COMMIT,
 	 MOPT_SET | MOPT_2 | MOPT_EXT4_ONLY},
 #endif
+	{Opt_new_write, EXT4_MOUNT2_NEW_WRITE, MOPT_SET | MOPT_2 },
 	{Opt_err, 0, 0}
 };
 
@@ -2978,6 +2981,8 @@ static int _ext4_show_options(struct seq_file *seq, struct super_block *sb,
 	} else if (test_opt2(sb, DAX_INODE)) {
 		SEQ_OPTS_PUTS("dax=inode");
 	}
+	if (test_opt2(sb, NEW_WRITE))
+		SEQ_OPTS_PUTS("new_write");
 
 	if (sbi->s_groups_count >= MB_DEFAULT_LINEAR_SCAN_THRESHOLD &&
 			!test_opt2(sb, MB_OPTIMIZE_SCAN)) {
